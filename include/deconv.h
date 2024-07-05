@@ -1,6 +1,7 @@
 #pragma once
 
 #include "fft.h"
+#include <opencv2/imgproc.hpp>
 
 // code from: https://stackoverflow.com/questions/40713929/weiner-deconvolution-using-opencv
 void WienerFilter(cv::Mat const& src, cv::Mat const& kernel, cv::Mat& dst, double nsr = 0.01)
@@ -64,4 +65,39 @@ void WienerFilter(cv::Mat const& src, cv::Mat const& kernel, cv::Mat& dst, doubl
     cv::merge(Fu, 2, FuComplex);
     InverseFFT(FuComplex, dst);
     Rearrange(dst, dst);
+}
+
+// code from: https://github.com/chrrrisw/RL_deconv
+void LucyRichardsonFilter(cv::Mat const& src, cv::Mat const& psf, cv::Mat& dst, int iterations)
+{
+    // Uniform grey starting estimation
+    dst = cv::Mat(src.size(), src.type(), cv::Scalar(0.5));
+
+    // Flip the point spread function (NOT the inverse)
+    cv::Mat psf_hat = cv::Mat(psf.size(), CV_64FC1);
+    //int psf_row_max = psf.rows - 1;
+    //int psf_col_max = psf.cols - 1;
+    //for (int row = 0; row <= psf_row_max; row++)
+    //    for (int col = 0; col <= psf_col_max; col++)
+    //        psf_hat.at<double>(psf_row_max - row, psf_col_max - col) = psf.at<double>(row, col);
+    cv::flip(psf, psf_hat, -1);
+
+    cv::Mat est_conv;
+    cv::Mat relative_blur;
+    cv::Mat error_est;
+
+    // Iterate
+    for (int i = 0; i < iterations; i++)
+    {
+
+        cv::filter2D(dst, est_conv, -1, psf);
+
+        // Element-wise division
+        relative_blur = src.mul(1.0 / est_conv);
+
+        cv::filter2D(relative_blur, error_est, -1, psf_hat);
+
+        // Element-wise multiplication
+        dst = dst.mul(error_est);
+    }
 }

@@ -118,7 +118,7 @@ int main(int argc, char* argv[])
     PSF.convertTo(PSF, CV_64FC1);
     cv::Mat deconv;
 
-    WienerFilter(conv, PSF, deconv);
+    //WienerFilter(conv, PSF, deconv);
 
     //cv::Mat Hw;
     //wnrFilter(PSF, Hw, 0.01);
@@ -128,6 +128,8 @@ int main(int argc, char* argv[])
     //filter2DFreq(I(roi), deconv, Hw);
     ////deconv.convertTo(deconv, CV_8U);
     ////cv::normalize(deconv, deconv, 0, 255, cv::NORM_MINMAX);
+
+    LucyRichardsonFilter(conv, PSF, deconv, 100);
 
     cv::imshow("Deconvolved Image", deconv);
 
