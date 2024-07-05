@@ -1,84 +1,137 @@
-#include "psf/psf.h"
+#include "deconv.h"
 
 #include <opencv2/highgui.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/imgcodecs.hpp>
 
-using namespace psf;
+#include <iostream>
 
-std::vector<double> linspace(double start, double end, double delta)
+// linear motion blur distortion
+// code from: https://docs.opencv.org/3.4/d1/dfd/tutorial_motion_deblur_filter.html
+void genPSF(cv::Mat& outputImg, cv::Size filterSize, int len /*length of a motion*/,
+            double theta /*angle of a motion in degrees*/)
 {
-    if (start + delta > end) return {start};
-
-    std::vector<double> ls;
-    size_t num = static_cast<size_t>(floor((end - start) / delta));
-    for (size_t i = 0; i < num - 1; ++i)
-        ls.push_back(start + delta * i);
-    ls.push_back(end);
-    return ls;
+    cv::Mat h(filterSize, CV_32F, cv::Scalar(0));
+    cv::Point point(filterSize.width / 2, filterSize.height / 2);
+    cv::ellipse(h, point, cv::Size(0, cvRound(float(len) / 2.0)), 90.0 - theta, 0, 360, cv::Scalar(255), cv::FILLED);
+    cv::Scalar summa = sum(h);
+    outputImg = h / summa[0];
+}
+// circular point spread function
+// code from: https://docs.opencv.org/3.4/de/d3c/tutorial_out_of_focus_deblur_filter.html
+void genPSF(cv::Mat& outputImg, cv::Size filterSize, int R)
+{
+    cv::Mat h(filterSize, CV_32F, cv::Scalar(0));
+    cv::Point point(filterSize.width / 2, filterSize.height / 2);
+    cv::circle(h, point, R, 255, -1, 8);
+    cv::Scalar summa = sum(h);
+    outputImg = h / summa[0];
 }
 
-void Show(double pz, int nx, double* xp, std::vector<double> z, Parameters const& p)
+void wnrFilter(cv::Mat const& input_h_PSF, cv::Mat& output_G, double nsr)
 {
-    // um -> m
-    std::for_each(z.begin(), z.end(), [](double& z) { z *= 1e-6; });
-
-    auto nz = static_cast<int>(z.size());
-
-    ScalarPSF psf(xp, z.data(), nz, nx, p);
-    //VectorialPSF psf(xp, z.data(), nz, nx, p);
-    psf.calculatePSF();
-    //psf.calculatePSFdxp();
-    printf("Done.\n");
-
-    // nx * ny * nz
-    // i = (z * nx * ny) + (y * nx) + x
-    double* pixels = new double[nx * nz];
-    for (auto x = 0; x < nx; x++)
-        for (auto y = 0; y < nz; y++)
-            pixels[x * nz + y] = psf.pixels_[y * nx * nx + nx / 2 * nx + x]; // y = nx / 2
-    cv::Mat I(nx, nz, CV_64FC1, pixels);
-    I = I.t();
-    cv::imshow("psf", I);
-
-    // power norm
-    // https://matplotlib.org/stable/api/_as_gen/matplotlib.colors.PowerNorm.html
-    cv::normalize(I, I, 1, 0, cv::NormTypes::NORM_MINMAX);
-    cv::imshow("psf_n", I);
-
-    cv::pow(I, 0.4, I);
-    cv::imshow("psf_np", I);
-
-    cv::waitKey(0);
-
-    delete[] pixels;
+    cv::Mat h_PSF_shifted;
+    Rearrange(input_h_PSF, h_PSF_shifted);
+    cv::Mat planes[2] = {cv::Mat_<float>(h_PSF_shifted.clone()), cv::Mat::zeros(h_PSF_shifted.size(), CV_32F)};
+    cv::Mat complexI;
+    cv::merge(planes, 2, complexI);
+    cv::dft(complexI, complexI);
+    cv::split(complexI, planes);
+    cv::Mat denom;
+    cv::pow(abs(planes[0]), 2, denom);
+    denom += nsr;
+    cv::divide(planes[0], denom, output_G);
 }
 
-int main(void)
+void filter2DFreq(cv::Mat const& inputImg, cv::Mat& outputImg, cv::Mat const& H)
 {
-    double ti0 = 150.0;
-    double ni0 = 1.515;
-    double ni = 1.515;
-    double tg0 = 170.0;
-    double tg = 170.0;
-    double ng0 = 1.515;
-    double ng = 1.515;
-    double ns = 1.47;
-    double wvl = 0.6;
-    double NA = 1.42;
-    double dxy = 0.02;
+    cv::Mat planes[2] = {cv::Mat_<float>(inputImg.clone()), cv::Mat::zeros(inputImg.size(), CV_32F)};
+    cv::Mat complexI;
+    cv::merge(planes, 2, complexI);
+    cv::dft(complexI, complexI, cv::DFT_SCALE);
+    cv::Mat planesH[2] = {cv::Mat_<float>(H.clone()), cv::Mat::zeros(H.size(), CV_32F)};
+    cv::Mat complexH;
+    cv::merge(planesH, 2, complexH);
+    cv::Mat complexIH;
+    cv::mulSpectrums(complexI, complexH, complexIH, 0);
+    cv::idft(complexIH, complexIH);
+    cv::split(complexIH, planes);
+    outputImg = planes[0];
+}
 
-    auto p = GetParameters(ti0, ni0, ni, tg0, tg, ng0, ng, ns, wvl, NA, dxy);
+void edgetaper(cv::Mat const& inputImg, cv::Mat& outputImg, double gamma = 5.0, double beta = 0.2)
+{
+    int Nx = inputImg.cols;
+    int Ny = inputImg.rows;
+    cv::Mat w1(1, Nx, CV_32F, cv::Scalar(0));
+    cv::Mat w2(Ny, 1, CV_32F, cv::Scalar(0));
+    float* p1 = w1.ptr<float>(0);
+    float* p2 = w2.ptr<float>(0);
+    float dx = float(2.0 * CV_PI / Nx);
+    float x = float(-CV_PI);
+    for (int i = 0; i < Nx; i++)
+    {
+        p1[i] = float(0.5 * (tanh((x + gamma / 2) / beta) - tanh((x - gamma / 2) / beta)));
+        x += dx;
+    }
+    float dy = float(2.0 * CV_PI / Ny);
+    float y = float(-CV_PI);
+    for (int i = 0; i < Ny; i++)
+    {
+        p2[i] = float(0.5 * (tanh((y + gamma / 2) / beta) - tanh((y - gamma / 2) / beta)));
+        y += dy;
+    }
+    cv::Mat w = w2 * w1;
+    cv::multiply(inputImg, w, outputImg);
+}
 
-    double pz = 0.0;
-    int nx = 101;
-    double xp[] = {0.0, 0.0, 0.0};
-    auto z = linspace(-2 + pz, 2 + dxy + pz, dxy);
-    Show(pz, nx, xp, z, p);
+int main(int argc, char* argv[])
+{
+    cv::Mat I = cv::imread(cv::samples::findFile(argv[1]), cv::IMREAD_GRAYSCALE);
+    if (I.empty())
+    {
+        std::cout << "Error opening input image" << std::endl;
+        return EXIT_FAILURE;
+    }
+    cv::imshow("Input Image", I);
 
-    pz = 2.0;
-    p.ns = 1.38;
-    p.ns_2 = p.ns * p.ns;
-    z = linspace(-2 + pz, 2 + dxy + pz, dxy);
-    Show(pz, nx, xp, z, p);
+    //cv::Mat PSF = cv::imread(cv::samples::findFile(argv[2]), cv::IMREAD_GRAYSCALE);
+    //if (PSF.empty())
+    //{
+    //    std::cout << "Error opening PSF image" << std::endl;
+    //    return EXIT_FAILURE;
+    //}
+    cv::Rect roi = cv::Rect(0, 0, I.cols & -2, I.rows & -2); // it needs to process even image only
+    cv::Mat PSF;
+    //genPSF(PSF, roi.size(), 125, 0);
+    genPSF(PSF, roi.size(), 20);
+    cv::imshow("PSF Image", PSF);
+
+    I.convertTo(I, CV_32FC1, 1.0 / 255.0);
+    PSF.convertTo(PSF, CV_32FC1, 1.0 / 255.0);
+    PSF /= cv::sum(PSF)[0];
+
+    cv::Mat conv;
+    Convolution(I, PSF, conv);
+    cv::imshow("Convolved Image", conv);
+
+    PSF.convertTo(PSF, CV_64FC1);
+    cv::Mat deconv;
+
+    WienerFilter(conv, PSF, deconv);
+
+    //cv::Mat Hw;
+    //wnrFilter(PSF, Hw, 0.01);
+    ////I.convertTo(I, CV_32F);
+    ////edgetaper(I, I);
+    ////cv::imshow("Edge Tapered Image", I);
+    //filter2DFreq(I(roi), deconv, Hw);
+    ////deconv.convertTo(deconv, CV_8U);
+    ////cv::normalize(deconv, deconv, 0, 255, cv::NORM_MINMAX);
+
+    cv::imshow("Deconvolved Image", deconv);
+
+    cv::waitKey();
 
     return 0;
 }

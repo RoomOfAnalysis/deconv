@@ -28,8 +28,13 @@ add_library(psf ${SRC_INCLUDE_DIR}/psf/psf.cpp ${SRC_INCLUDE_DIR}/psf/psf.h)
 
 find_package(OpenCV REQUIRED)
 
+add_executable(psf_test ${SRC_DIR}/psf_test.cpp)
+target_link_libraries(psf_test
+    PRIVATE psf
+    PRIVATE ${OpenCV_LIBS}
+)
+
 add_executable(${PROJECT_NAME} ${SRC_DIR}/main.cpp)
 target_link_libraries(${PROJECT_NAME}
-    PRIVATE psf
     PRIVATE ${OpenCV_LIBS}
 )
