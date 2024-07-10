@@ -1,4 +1,5 @@
 #include "deconv.h"
+#include "deconv_blind.h"
 
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
@@ -118,7 +119,7 @@ int main(int argc, char* argv[])
     PSF.convertTo(PSF, CV_64FC1);
     cv::Mat deconv;
 
-    //WienerFilter(conv, PSF, deconv);
+    WienerFilter(conv, PSF, deconv);
 
     //cv::Mat Hw;
     //wnrFilter(PSF, Hw, 0.01);
@@ -128,10 +129,27 @@ int main(int argc, char* argv[])
     //filter2DFreq(I(roi), deconv, Hw);
     ////deconv.convertTo(deconv, CV_8U);
     ////cv::normalize(deconv, deconv, 0, 255, cv::NORM_MINMAX);
+    cv::imshow("Wiener Filter Deconvolved Image", deconv);
 
     LucyRichardsonFilter(conv, PSF, deconv, 100);
+    cv::imshow("LR Filter Deconvolved Image", deconv);
 
-    cv::imshow("Deconvolved Image", deconv);
+    DECONV_BLIND::uk_t uk;
+    DECONV_BLIND::params_t params;
+
+    params.MK = 20 * 2; // row
+    params.NK = 20 * 2; // col
+    params.niters = 200;
+
+    conv.convertTo(conv, CV_8UC1, 1. * 255.);
+    cv::Mat conv_v[3] = {conv, conv, conv};
+    cv::Mat conv_vv;
+    cv::merge(conv_v, 3, conv_vv);
+    std::cout << std::boolalpha << DECONV_BLIND::isGrayImage(conv_vv) << '\n';
+    DECONV_BLIND::blind_deconv(conv_vv, 0.0006, params, uk, 1);
+    cv::Mat tmpu;
+    uk.u.convertTo(tmpu, CV_8U, 1. * 255.);
+    cv::imshow("BlindDeconv Image", tmpu);
 
     cv::waitKey();
 
